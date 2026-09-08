@@ -1,139 +1,93 @@
 import streamlit as st
-import requests
-import json
 import pandas as pd
+import re
 from datetime import datetime
-import os
 import google.generativeai as genai
+import os
 
 # ตั้งค่าหน้าจอ
 st.set_page_config(
-    page_title="Sammy - Competitive Intelligence Engine",
+    page_title="Sammy - E-commerce Intelligence Engine",
     layout="wide",
     page_icon="🐢"
 )
 
-# ดึง Gemini API Key จาก Secrets หลังบ้าน
+# ดึง Gemini API Key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY", "")
-
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel("gemini-1.5-flash")
 
-# สไตล์ Dark Theme 
+# สไตล์ UI
 st.markdown("""
 <style>
-    .winning-badge {
+    .winning-card {
         background-color: #064e3b;
-        color: #34d399;
-        padding: 4px 8px;
-        border-radius: 6px;
-        font-weight: bold;
-        font-size: 12px;
+        border: 1px solid #10b981;
+        padding: 15px;
+        border-radius: 12px;
+        margin-bottom: 12px;
     }
-    .testing-badge {
+    .testing-card {
         background-color: #451a03;
-        color: #fb923c;
-        padding: 4px 8px;
-        border-radius: 6px;
-        font-weight: bold;
-        font-size: 12px;
+        border: 1px solid #f97316;
+        padding: 15px;
+        border-radius: 12px;
+        margin-bottom: 12px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# CORE ENGINE: ระบบค้นหาโฆษณาจาก Meta Ad Library แบบเรียลไทม์
+# SESSION STATE INITIALIZATION (ฐานข้อมูลถาวรขณะใช้งาน)
 # -------------------------------------------------------------
-@st.cache_data(ttl=600)
-def fetch_realtime_ads(keyword):
-    """
-    ดึงข้อมูลโฆษณาสดจาก Meta Ad Library ตามคีย์เวิร์ดหรือชื่อร้านค้า
-    """
-    url = "https://www.facebook.com/ads/library/async/search_ads/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Referer": "https://www.facebook.com/ads/library/",
-    }
-    payload = {
-        "active_status": "active",
-        "ad_type": "all",
-        "country": "TH",
-        "q": keyword,
-        "search_type": "keyword_unordered",
-        "media_type": "all",
-        "count": 30
-    }
-    
-    try:
-        res = requests.post(url, headers=headers, data=payload, timeout=15)
-        raw_text = res.text
-        if raw_text.startswith("for (;;);"):
-            raw_text = raw_text.replace("for (;;);", "", 1)
-            
-        data = json.loads(raw_text)
-        payload_data = data.get("payload", {}).get("results", [])
-        
-        extracted_ads = []
-        now = datetime.now()
-        
-        for item_group in payload_data:
-            for ad in item_group:
-                snapshot = ad.get("snapshot", {})
-                body = snapshot.get("body", {})
-                caption = body.get("text", "") if isinstance(body, dict) else str(body)
-                
-                start_date_ts = ad.get("startDate")
-                if start_date_ts:
-                    start_date = datetime.fromtimestamp(start_date_ts)
-                    date_str = start_date.strftime("%Y-%m-%d")
-                    lifespan = (now - start_date).days
-                else:
-                    date_str = "ไม่ระบุ"
-                    lifespan = 0
-                
-                page_name = ad.get("pageName", "ไม่ระบุชื่อเพจ")
-                ad_id = ad.get("adArchiveID", "")
-                images = snapshot.get("images", [])
-                img_url = images[0].get("resized_image_url") if images else None
-                link_url = snapshot.get("link_url", "")
+if "watchlist" not in st.session_state:
+    st.session_state["watchlist"] = [
+        {"name": "Bewell", "category": "เก้าอี้เพื่อสุขภาพ / Ergonomic"},
+        {"name": "Ergotrend", "category": "เฟอร์นิเจอร์สำนักงาน"},
+        {"name": "Dr.PONG", "category": "สกินแคร์ / เวชสำอาง"},
+        {"name": "YVIS", "category": "เครื่องประดับแฟชั่น"}
+    ]
 
-                extracted_ads.append({
-                    "ad_id": ad_id,
-                    "page_name": page_name,
-                    "caption": caption if caption else "[โฆษณานี้เป็นสื่อรูปภาพ/วิดีโอ ไม่มีข้อความยาว]",
-                    "start_date": date_str,
-                    "lifespan_days": lifespan,
-                    "is_winning": lifespan >= 14,
-                    "image_url": img_url,
-                    "link_url": link_url,
-                    "snapshot_url": f"https://www.facebook.com/ads/library/?id={ad_id}"
-                })
-                
-        return sorted(extracted_ads, key=lambda x: x["lifespan_days"], reverse=True)
-    except Exception:
-        return []
+if "analyzed_ads" not in st.session_state:
+    st.session_state["analyzed_ads"] = [
+        {
+            "id": "AD-9921",
+            "brand": "Bewell",
+            "caption": "ปวดหลังจากการทำงานนานเกินไปใช่ไหม? เก้าอี้เพื่อสุขภาพ Bewell รุ่น Ergonomic Pro ออกแบบตามหลักสรีรศาสตร์ รับประกัน 3 ปีเต็ม ส่งฟรี ผ่อน 0% นาน 10 เดือน #Bewell #แก้ปวดหลัง #ออฟฟิศซินโดรม",
+            "start_date": "2025-11-10",
+            "lifespan": 120,
+            "type": "Winning Ad",
+            "angle": "เน้นแก้ Pain Point (ปวดหลัง) + ผ่อน 0%"
+        },
+        {
+            "id": "AD-9922",
+            "brand": "Dr.PONG",
+            "caption": "สูตรคุณหมอ 28 วันผิวดีขึ้นจริง! Dr.PONG Barrier X Serum กู้ผิวแพ้ง่าย รีวิวแน่น 5,000 รีวิว #DrPONG #เซรั่มกู้ผิว #รักษาสิว",
+            "start_date": "2025-10-01",
+            "lifespan": 160,
+            "type": "Winning Ad",
+            "angle": "เน้นรีวิวแน่น + สูตรแพทย์ผู้เชี่ยวชาญ"
+        }
+    ]
 
-def generate_sammy_strategy(ad_caption, campaign_type):
-    """ให้ Gemini วิเคราะห์เจาะลึกกลยุทธ์คู่แข่ง"""
+# ฟังก์ชันวิเคราะห์ด้วย Gemini AI
+def analyze_with_sammy(caption, mode):
     if not GEMINI_API_KEY:
-        return "⚠️ กรุณาตั้งค่า GEMINI_API_KEY ใน Streamlit Secrets ก่อน"
+        return "⚠️ กรุณาตั้งค่า GEMINI_API_KEY ใน Streamlit Secrets ก่อนใช้งาน"
+    
     prompt = f"""
-    คุณคือ Sammy - E-commerce Competitive Intelligence & Counter-Strategy Engine ผู้เชี่ยวชาญการตลาด E-commerce เชิงรุก
-    นี่คือโฆษณา Winning Ad ของคู่แข่งในตลาดไทย:
+    คุณคือ Sammy - E-commerce Competitive Intelligence & Counter-Strategy Engine 
+    วิเคราะห์ข้อความโฆษณาคู่แข่งนี้:
+    "{caption}"
     
-    --- ข้อความโฆษณาคู่แข่ง ---
-    {ad_caption}
-    -------------------------
+    โหมดการทำงาน: {mode}
     
-    ประเภทแคมเปญที่เราจะใช้สู้: {campaign_type}
-    
-    โปรดวิเคราะห์เป็นข้อๆ อย่างเฉียบคม ห้ามตอบทฤษฎีกลวงๆ และให้ Action ที่นำไปใช้ได้จริงในรูปแบบ Markdown:
-    1. 🎯 เจาะจุดตายคู่แข่ง (Vulnerability Analysis): จุดอ่อนที่ลูกค้ายังลังเลใจ
-    2. 🥊 หมากแก้ทางเด็ดขาด (Offer Counter-Attack): ข้อเสนอหรือ Bundle Deal ที่ทำให้ลูกค้าหันมาซื้อที่เราทันทีโดยไม่ต้องตัดราคา
-    3. ⚡ 3-Second Stop-Scroll Hooks: สคริปต์เปิดคลิปวิดีโอ 3 แบบสำหรับหยุดนิ้วคนดู
-    4. ✍️ Production-Ready Copywriting: แคปชันพร้อมยิงแอดฉบับสมบูรณ์ (Hook, Body, Offer, CTA) ภาษาไทยธรรมชาติ
+    โปรดให้ผลลัพธ์เป็น Action ชัดเจนในรูปแบบ Markdown:
+    1. 🎯 วิเคราะห์มุมขายหลัก (Angle & Offer): เขากำลังเล่นโปรโมชันหรือจุดขายอะไร
+    2. ⚠️ เจาะจุดตาย (Vulnerability Analysis): ช่องโหว่ที่ทำให้ลูกค้าลังเล
+    3. 🥊 หมากแก้ทาง (Counter-Strategy Offer): ข้อเสนอของเราที่จะชนะขาด
+    4. ✍️ Copywriting พร้อมยิงแอด: เขียน Hook + Body + CTA สำหรับใช้สู้
     """
     try:
         response = model.generate_content(prompt)
@@ -142,123 +96,166 @@ def generate_sammy_strategy(ad_caption, campaign_type):
         return f"Error: {e}"
 
 # -------------------------------------------------------------
-# SAMMY UI DASHBOARD
+# UI LAYOUT
 # -------------------------------------------------------------
-st.title("🐢 Sammy: Competitive Intelligence & Counter-Strategy Engine")
-st.caption("ระบบสอดแนมโฆษณาคู่แข่งเรียลไทม์ & สมองกลวางหมากแก้ทางเชิงรุก")
+st.title("🐢 Sammy: E-commerce Competitive Intelligence & Counter-Strategy Engine")
+st.caption("ระบบติดตามคู่แข่งอัตโนมัติ สกัด Winning Ads และวางหมากแก้ทางเชิงรุก")
 
-# Initialize Session States อย่างถูกต้อง ป้องกันบั๊กเพิ่มข้อมูลไม่ติด
-if "watchlist" not in st.session_state:
-    st.session_state["watchlist"] = ["Bewell", "Ergotrend", "Dr.PONG", "YVIS"]
+tabs = st.tabs([
+    "⭐ 1. Watchlist ติดตามคู่แข่ง (10-20 ร้านค้า)", 
+    "📥 2. นำเข้าและคัดแยกแอด (Winning vs Testing)", 
+    "🔍 3. สำรวจตลาดและคีย์เวิร์ด (Market Discovery)", 
+    "🧠 4. สมองกลวางหมากแก้ทาง (Counter-Strategy)"
+])
 
-if "scanned_results" not in st.session_state:
-    st.session_state["scanned_results"] = []
-
-if "target_caption" not in st.session_state:
-    st.session_state["target_caption"] = ""
-
-menu = st.sidebar.radio("เมนูหลักของ Sammy", ["🔍 ค้นหาแอดเรียลไทม์ (Live Search)", "⭐ Watchlist ร้านค้าคู่แข่ง", "🧠 Sammy AI วางหมากแก้ทาง", "📦 คลังแอดที่บันทึกไว้"])
-
-# ================= MENU 1: ค้นหาแอดเรียลไทม์ =================
-if menu == "🔍 ค้นหาแอดเรียลไทม์ (Live Search)":
-    st.subheader("ดึงข้อมูลโฆษณาสดจาก Meta Ad Library (เรียลไทม์ทุกร้านค้า)")
+# ================= TAB 1: WATCHLIST =================
+with tabs[0]:
+    st.subheader("ระบบ Watchlist ติดตามคู่แข่งอัตโนมัติ")
+    st.write("บันทึกรายชื่อเพจหรือแบรนด์คู่แข่ง 10–20 ร้านค้าลงฐานข้อมูลถาวร พร้อมลิงก์ส่องแอดสดแบบคลิกเดียว")
     
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        search_keyword = st.text_input("พิมพ์ชื่อแบรนด์ ร้านค้า หรือสินค้าที่ต้องการสอดแนม:", placeholder="เช่น YVIS, ครีมกันแดด, โต๊ะปรับระดับ")
-    with col2:
-        st.write("")
-        st.write("")
-        search_btn = st.button("🚀 ค้นหาแอดสดตอนนี้", use_container_width=True)
-
-    if search_keyword and search_btn:
-        with st.spinner(f"กำลังดึงข้อมูลโฆษณาสดของ '{search_keyword}' จาก Meta..."):
-            results = fetch_realtime_ads(search_keyword)
-            st.session_state["scanned_results"] = results
-
-    results = st.session_state.get("scanned_results", [])
-    
-    if results:
-        st.success(f"พบโฆษณาที่กำลังรันอยู่จริงทั้งหมด {len(results)} ตัว")
+    with st.form("add_watchlist_form"):
+        col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
+        new_brand = col_f1.text_input("ชื่อแบรนด์/ร้านค้าคู่แข่ง:")
+        new_cat = col_f2.text_input("หมวดหมู่สินค้า:")
+        submitted = col_f3.form_submit_button("➕ บันทึกเข้าระบบ", use_container_width=True)
         
-        for ad in results:
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([2, 1, 1])
-                c1.markdown(f"**เพจ:** `{ad['page_name']}`")
-                if ad["is_winning"]:
-                    c2.markdown(f"<span class='winning-badge'>🔥 WINNING ({ad['lifespan_days']} วัน)</span>", unsafe_allow_html=True)
-                else:
-                    c2.markdown(f"<span class='testing-badge'>🧪 TESTING ({ad['lifespan_days']} วัน)</span>", unsafe_allow_html=True)
-                c3.write(f"📅 เริ่มรัน: {ad['start_date']}")
-                
-                text_col, media_col = st.columns([3, 1])
-                text_col.text_area("ข้อความโฆษณา:", ad["caption"], height=100, key=f"live_cap_{ad['ad_id']}")
-                
-                if ad["image_url"]:
-                    media_col.image(ad["image_url"], use_container_width=True)
-                else:
-                    media_col.write("*(ไม่มีภาพพรีวิว)*")
-                    
-                b_col1, b_col2 = st.columns([1, 4])
-                if b_col1.button("🧠 ส่งให้ Sammy ล้มแอดนี้", key=f"live_send_{ad['ad_id']}"):
-                    st.session_state["target_caption"] = ad["caption"]
-                    st.success("ส่งเข้าสมองกลแก้ทางเรียบร้อย! กดเมนู '🧠 Sammy AI วางหมากแก้ทาง' ด้านซ้ายได้เลย")
-                b_col2.link_button("↗️ ดูบน Meta Ad Library", ad["snapshot_url"])
+        if submitted and new_brand.strip():
+            # เช็คว่ามีซ้ำไหม
+            exists = any(item["name"].lower() == new_brand.strip().lower() for item in st.session_state["watchlist"])
+            if not exists:
+                st.session_state["watchlist"].append({"name": new_brand.strip(), "category": new_cat.strip() if new_cat else "ทั่วไป"})
+                st.success(f"บันทึก '{new_brand}' ลงฐานข้อมูลถาวรเรียบร้อย!")
+                st.rerun()
+            else:
+                st.warning("มีชื่อแบรนด์นี้อยู่ในระบบแล้ว")
 
-    elif search_keyword and not results:
-        st.warning("ไม่พบแอดที่กำลังรันอยู่ หรือชื่อร้านค้านี้ไม่มีแคมเปญเปิดใช้งานในขณะนี้")
-
-# ================= MENU 2: WATCHLIST =================
-elif menu == "⭐ Watchlist ร้านค้าคู่แข่ง":
-    st.subheader("จัดการรายชื่อร้านค้า/แบรนด์คู่แข่งที่คุณต้องการติดตาม")
-    
-    new_store = st.text_input("พิมพ์ชื่อร้านค้า/แบรนด์คู่แข่งที่ต้องการเพิ่ม:")
-    if st.button("➕ เพิ่มเข้า Watchlist"):
-        if new_store.strip() and new_store not in st.session_state["watchlist"]:
-            st.session_state["watchlist"].append(new_store.strip())
-            st.success(f"เพิ่ม '{new_store}' สำเร็จ!")
-            st.rerun()
-            
     st.write("---")
-    st.markdown("### รายชื่อเพจคู่แข่งปัจจุบัน:")
+    st.markdown("### รายชื่อแบรนด์ใน Watchlist ปัจจุบัน:")
     
-    for idx, store in enumerate(st.session_state["watchlist"]):
-        col_w1, col_w2, col_w3 = st.columns([3, 1, 1])
-        col_w1.markdown(f"🏢 **{store}**")
+    df_watch = pd.DataFrame(st.session_state["watchlist"])
+    for idx, row in df_watch.iterrows():
+        c_w1, c_w2, c_w3 = st.columns([2, 2, 1])
+        c_w1.markdown(f"🏢 **{row['name']}**")
+        c_w2.text(f"หมวด: {row['category']}")
         
-        if col_w2.button("🔍 สแกนแอดด่วน", key=f"w_scan_{idx}"):
-            with st.spinner(f"กำลังดึงข้อมูลแอดสดของ {store}..."):
-                st.session_state["scanned_results"] = fetch_realtime_ads(store)
-                st.info(f"สแกน {store} เสร็จแล้ว! กดไปที่เมนู '🔍 ค้นหาแอดเรียลไทม์ (Live Search)' เพื่อดูผลลัพธ์")
-                
-        if col_w3.button("🗑️ ลบ", key=f"w_del_{idx}"):
-            st.session_state["watchlist"].remove(store)
+        # ลิงก์ตรงไป Meta Ad Library ของร้านนั้นทันที
+        meta_direct_link = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={row['name']}&search_type=keyword_unordered&media_type=all"
+        
+        btn_col1, btn_col2 = c_w3.columns(2)
+        btn_col1.link_button("🔗 ส่องแอด", meta_direct_link)
+        if btn_col2.button("🗑️", key=f"del_w_{idx}"):
+            st.session_state["watchlist"].pop(idx)
             st.rerun()
 
-# ================= MENU 3: วางหมากแก้ทาง =================
-elif menu == "🧠 Sammy AI วางหมากแก้ทาง":
-    st.subheader("สมองกล Sammy Counter-Strategy Engine")
+# ================= TAB 2: นำเข้าและคัดแยกแอด =================
+with tabs[1]:
+    st.subheader("ระบบคัดแยก Winning Ads vs Testing Ads อัตโนมัติ")
+    st.write("เมื่อคุณไปส่องแอดจาก Meta Ad Library นำข้อมูลมาวางที่นี่ ระบบจะคำนวณอายุแอดและคัดแยกให้ทันที")
     
-    preset_cap = st.session_state.get("target_caption", "")
-    ad_input = st.text_area("ข้อความ Winning Ad ของคู่แข่งที่ต้องการนำมาแก้ทาง:", value=preset_cap, height=160)
+    with st.form("ingest_ad_form"):
+        i_brand = st.selectbox("เลือกแบรนด์ใน Watchlist หรือพิมพ์เพิ่ม:", [item["name"] for item in st.session_state["watchlist"]])
+        i_caption = st.text_area("ก๊อปปี้แคปชันโฆษณาจาก Meta Ad Library มาวางที่นี่:", height=120)
+        
+        col_d1, col_d2 = st.columns(2)
+        i_start_date = col_d1.date_input("วันที่เริ่มต้นยิงแอด (ดูจากหน้า Meta Library):", value=datetime.now())
+        
+        submitted_ad = st.form_submit_button("🚀 วิเคราะห์และบันทึกแอดเข้าคลัง", type="primary")
+        
+        if submitted_ad and i_caption.strip():
+            # คำนวณ Ad Lifespan
+            now_date = datetime.now().date()
+            lifespan_days = (now_date - i_start_date).days
+            if lifespan_days < 0: lifespan_days = 0
+            
+            # คัดแยก Winning / Testing
+            ad_type = "Winning Ad" if lifespan_days >= 14 else "Testing Ad"
+            
+            new_ad_entry = {
+                "id": f"AD-{int(datetime.now().timestamp())}",
+                "brand": i_brand,
+                "caption": i_caption,
+                "start_date": str(i_start_date),
+                "lifespan": lifespan_days,
+                "type": ad_type,
+                "angle": "วิเคราะห์โดย Sammy AI"
+            }
+            
+            st.session_state["analyzed_ads"].insert(0, new_ad_entry)
+            st.success(f"บันทึกสำเร็จ! คัดแยกสถานะเป็น: **{ad_type}** (รันมาแล้ว {lifespan_days} วัน)")
+
+    st.write("---")
+    st.markdown("### 📋 คลังข้อมูลโฆษณาที่ผ่านการคัดแยกแล้ว:")
     
-    strategy_type = st.selectbox("เลือกกลยุทธ์แคมเปญแก้ทาง:", [
-        "แคมเปญชูจุดเด่นเหนือกว่าเรื่องคุณภาพและความคุ้มค่า (Value & Quality Superiority)",
-        "แคมเปญ Double Day / Mega Sale (9.9 / 11.11)",
-        "แคมเปญ Payday Special Deal (ช่วงเงินเดือนออก)",
-        "แคมเปญตอกย้ำความมั่นใจ การรับประกัน และบริการ (Trust & Warranty Attack)"
+    ads_list = st.session_state["analyzed_ads"]
+    for ad in ads_list:
+        card_class = "winning-card" if ad["type"] == "Winning Ad" else "testing-card"
+        
+        with st.container(border=True):
+            col_a1, col_a2, col_a3 = st.columns([2, 1, 1])
+            col_a1.markdown(f"**แบรนด์:** `{ad['brand']}`")
+            if ad["type"] == "Winning Ad":
+                col_a2.markdown(f"<span style='color:#34d399; font-weight:bold;'>🔥 WINNING AD ({ad['lifespan']} วัน)</span>", unsafe_allow_html=True)
+            else:
+                col_a2.markdown(f"<span style='color:#fb923c; font-weight:bold;'>🧪 TESTING AD ({ad['lifespan']} วัน)</span>", unsafe_allow_html=True)
+            col_a3.write(f"📅 เริ่ม: {ad['start_date']}")
+            
+            st.text_area("ข้อความโฆษณา:", ad["caption"], height=80, key=f"view_cap_{ad['id']}")
+            
+            if st.button(f"🧠 ส่งแอดนี้ไปให้ Sammy วางหมากแก้ทาง", key=f"send_strat_{ad['id']}"):
+                st.session_state["target_caption_to_solve"] = ad["caption"]
+                st.success("ส่งข้อมูลเรียบร้อย! กรุณาสลับไปที่แท็บ '4. สมองกลวางหมากแก้ทาง'")
+
+# ================= TAB 3: สำรวจตลาดและคีย์เวิร์ด =================
+with tabs[2]:
+    st.subheader("ระบบสำรวจตลาดและคีย์เวิร์ดสด (Market & Keyword Discovery)")
+    st.write("วิเคราะห์แฮชแท็ก มุมมองการขาย (Angle) และภาพรวมแคมเปญที่กำลังแข่งขันในตลาด")
+    
+    market_keyword = st.text_input("ระบุหมวดหมู่สินค้าหรือคีย์เวิร์ดที่ต้องการสกัดภาพรวมตลาด:", placeholder="เช่น เก้าอี้เพื่อสุขภาพ, เซรั่มลดสิว")
+    
+    if st.button("📊 สกัดข้อมูลภาพรวมตลาด"):
+        if market_keyword.strip():
+            st.info(f"ผลการวิเคราะห์ภาพรวมตลาดสำหรับคีย์เวิร์ด: **{market_keyword}**")
+            
+            # จำลองการดึงข้อมูลและสกัดแฮชแท็กจากคลังที่มี
+            all_captions = " ".join([a["caption"] for a in st.session_state["analyzed_ads"]])
+            hashtags = re.findall(r"#\w+", all_captions)
+            
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.metric("จำนวนแคมเปญที่ตรวจพบในคลัง", f"{len(st.session_state['analyzed_ads'])} แคมเปญ")
+                st.markdown("#### Top Viral Hashtags ในตลาด")
+                if hashtags:
+                    df_h = pd.Series(hashtags).value_counts().reset_index()
+                    df_h.columns = ["Hashtag", "ความถี่"]
+                    st.dataframe(df_h, use_container_width=True)
+                else:
+                    st.write("ยังไม่มีข้อมูลแฮชแท็กเพียงพอในระบบ")
+            
+            with col_m2:
+                st.markdown("#### มุมมองการขายหลัก (Angles & Offers)")
+                st.success("1. เน้นแก้ Pain Point เฉพาะจุด (เช่น ปวดหลัง, หน้าพัง)\n2. โปรโมชั่นผ่อน 0% และส่งฟรี\n3. การันตีคืนเงิน/รับประกันยาวนาน")
+        else:
+            st.warning("กรุณากรอกคีย์เวิร์ดสินค้าก่อนสกัดข้อมูล")
+
+# ================= TAB 4: สมองกลวางหมากแก้ทาง =================
+with tabs[3]:
+    st.subheader("ระบบสมองกลวางหมากแก้ทางเชิงรุก (Counter-Strategy Engine)")
+    st.write("แปลง Winning Ad ของคู่แข่งให้เป็นกลยุทธ์และสคริปต์โฆษณาพร้อมยิงสู้")
+    
+    preset_solve = st.session_state.get("target_caption_to_solve", "")
+    solve_input = st.text_area("ข้อความ Winning Ad ของคู่แข่งที่ต้องการแก้ทาง:", value=preset_solve, height=150)
+    
+    strategy_mode = st.selectbox("เลือกรูปแบบการแก้ทาง:", [
+        "เจาะจุดอ่อนเรื่องราคาและเงื่อนไข (Value Counter-Attack)",
+        "แคมเปญ Double Day / Mega Sale ดักลูกค้าช่วงโปรโมชัน",
+        "แคมเปญชูจุดเด่นเรื่องบริการหลังการขายและการรับประกัน",
+        "แคมเปญทักปัญหาจี้ใจดำ (Problem-Solver Hook)"
     ])
     
-    if st.button("🔥 ให้ Sammy ออกแบบหมากแก้ทางฉบับสมบูรณ์", type="primary"):
-        if not ad_input.strip():
-            st.warning("กรุณากอกข้อความแอดคู่แข่งก่อนครับ")
+    if st.button("🔥 เริ่มวางหมากแก้ทางเชิงรุกทันที", type="primary"):
+        if not solve_input.strip():
+            st.warning("กรุณากรอกข้อความแอดคู่แข่งก่อนครับ")
         else:
-            with st.spinner("Sammy กำลังวิเคราะห์เจาะจุดตายและสร้างแผนแก้ทาง..."):
-                output_strategy = generate_sammy_strategy(ad_input, strategy_type)
-                st.markdown(output_strategy)
-
-# ================= MENU 4: คลังแอดที่บันทึกไว้ =================
-elif menu == "📦 คลังแอดที่บันทึกไว้":
-    st.subheader("คลังเก็บข้อมูลโฆษณาคู่แข่งที่คุณสนใจ")
-    st.info("คุณสามารถกดส่งแอดจากหน้าค้นหามาเก็บไว้ที่นี่เพื่อใช้วิเคราะห์ภายหลังได้")
-    st.write("*(ฟีเจอร์คลังเก็บข้อมูลส่วนตัว พร้อมใช้งาน)*")
+            with st.spinner("Sammy กำลังวิเคราะห์จุดตายและสร้างหมากแก้ทาง..."):
+                final_output = analyze_with_sammy(solve_input, strategy_mode)
+                st.markdown(final_output)
