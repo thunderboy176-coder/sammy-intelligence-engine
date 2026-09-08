@@ -120,10 +120,18 @@ with tabs[0]:
         submitted = col_f3.form_submit_button("➕ บันทึกเข้าระบบ", use_container_width=True)
         
         if submitted and new_brand.strip():
-            exists = any(item["name"].lower() == new_brand.strip().lower() for item in st.session_state["watchlist"])
+            # ตรวจสอบรูปแบบข้อมูลใน Watchlist ให้เป็น Dictionary เสมอ
+            clean_name = new_brand.strip()
+            clean_cat = new_cat.strip() if new_cat else "ทั่วไป"
+            
+            exists = any(
+                (item["name"].lower() if isinstance(item, dict) else str(item).lower()) == clean_name.lower() 
+                for item in st.session_state["watchlist"]
+            )
+            
             if not exists:
-                st.session_state["watchlist"].append({"name": new_brand.strip(), "category": new_cat.strip() if new_cat else "ทั่วไป"})
-                st.success(f"บันทึก '{new_brand}' ลงฐานข้อมูลเรียบร้อย!")
+                st.session_state["watchlist"].append({"name": clean_name, "category": clean_cat})
+                st.success(f"บันทึก '{clean_name}' ลงฐานข้อมูลเรียบร้อย!")
                 st.rerun()
             else:
                 st.warning("มีชื่อแบรนด์นี้อยู่ในระบบแล้ว")
@@ -131,13 +139,18 @@ with tabs[0]:
     st.write("---")
     st.markdown("### รายชื่อแบรนด์ใน Watchlist ปัจจุบัน:")
     
-    # วนลูปผ่าน List โดยตรง ป้องกัน KeyError ของ Pandas DataFrame
+    # วนลูปตรวจสอบประเภทข้อมูล ป้องกัน KeyError / TypeError 100%
     for idx, store_item in enumerate(st.session_state["watchlist"]):
+        # ถ้าข้อมูลในลิสต์เก่าเป็น String ธรรมดา ให้แปลงเป็น Dict ชั่วคราวหน้างาน
+        if isinstance(store_item, str):
+            store_item = {"name": store_item, "category": "ทั่วไป"}
+            st.session_state["watchlist"][idx] = store_item
+
         c_w1, c_w2, c_w3 = st.columns([2, 2, 1])
-        c_w1.markdown(f"🏢 **{store_item['name']}**")
-        c_w2.text(f"หมวด: {store_item['category']}")
+        c_w1.markdown(f"🏢 **{store_item.get('name', 'ไม่ระบุ')}**")
+        c_w2.text(f"หมวด: {store_item.get('category', 'ทั่วไป')}")
         
-        meta_direct_link = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={store_item['name']}&search_type=keyword_unordered&media_type=all"
+        meta_direct_link = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={store_item.get('name', '')}&search_type=keyword_unordered&media_type=all"
         
         btn_col1, btn_col2 = c_w3.columns(2)
         btn_col1.link_button("🔗 ส่องแอด", meta_direct_link)
@@ -151,7 +164,7 @@ with tabs[1]:
     st.write("เมื่อคุณไปส่องแอดจาก Meta Ad Library นำข้อมูลมาวางที่นี่ ระบบจะคำนวณอายุแอดและคัดแยกให้ทันที")
     
     with st.form("ingest_ad_form"):
-        brand_options = [item["name"] for item in st.session_state["watchlist"]]
+        brand_options = [item["name"] if isinstance(item, dict) else str(item) for item in st.session_state["watchlist"]]
         i_brand = st.selectbox("เลือกแบรนด์ใน Watchlist หรือพิมพ์เพิ่ม:", brand_options if brand_options else ["ทั่วไป"])
         i_caption = st.text_area("ก๊อปปี้แคปชันโฆษณาจาก Meta Ad Library มาวางที่นี่:", height=120)
         
