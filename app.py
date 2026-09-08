@@ -3,6 +3,7 @@ import pandas as pd
 import re
 from datetime import datetime
 import os
+import urllib.parse
 import google.generativeai as genai
 from apify_client import ApifyClient
 
@@ -44,45 +45,46 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# 1. CORE ENGINE: ดึงแอดสดอัตโนมัติผ่าน Apify Gateway (แก้ไข Parameter แล้ว)
+# 1. CORE ENGINE: ดึงแอดสดอัตโนมัติผ่าน Gateway (ใส่ startUrls ตามสเปก)
 # -------------------------------------------------------------
 def fetch_live_ads_gateway(search_query, max_results=20):
-    """ส่งคำขอไปยัง Apify Scraper เพื่อดึงข้อมูลสดจริง 100%"""
+    """ส่งคำขอไปยัง Apify Scraper โดยส่ง startUrls ตรงตามสเปก"""
     if not apify_client:
-        st.error("⚠️ ไม่พบ APIFY_API_TOKEN กรุณาตั้งค่าใน Streamlit Secrets ก่อนใช้งาน")
+        st.error("⚠️ ไม่พบ APIFY_API_TOKEN กรุณาตั้งค่าใน Streamlit Secrets")
         return []
 
-    # Config input สำหรับ Meta Ads Scraper
+    # สร้าง URL ค้นหาของ Meta Ad Library ประเทศไทยโดยตรง
+    encoded_query = urllib.parse.quote(search_query)
+    target_meta_url = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={encoded_query}&search_type=keyword_unordered&media_type=all"
+
     run_input = {
-        "searchTerms": [search_query],
-        "country": "TH",
-        "activeStatus": "ACTIVE",
+        "startUrls": [{"url": target_meta_url}],
         "maxAds": max_results,
-        "mediaType": "ALL"
+        "country": "TH"
     }
 
     try:
-        # ตัด timeout_secs ออกเพื่อไม่ให้เกิด unexpected keyword argument error
+        # สั่งรัน Actor
         run = apify_client.actor("apify/facebook-ads-scraper").call(run_input=run_input)
         
-        # ดึงผลลัพธ์จาก Dataset
+        # ดึงผลลัพธ์
         dataset_items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
         
         extracted = []
         now = datetime.now()
 
         for item in dataset_items:
-            # ดึงข้อความแคปชันจากฟิลด์ต่างๆ ที่ Meta ส่งมา
+            # ดึงข้อความแคปชัน
             caption = (
-                item.get("text") or 
                 item.get("caption") or 
+                item.get("text") or 
                 item.get("adCreativeBody") or 
-                item.get("body", {}).get("text") if isinstance(item.get("body"), dict) else ""
+                (item.get("body", {}).get("text") if isinstance(item.get("body"), dict) else "") or
+                ""
             )
             
-            # วันที่เริ่มรัน
-            start_date_str = item.get("startDate") or item.get("adDeliveryStartDate") or ""
-            page_name = item.get("pageName") or search_query
+            start_date_str = item.get("startDate") or item.get("adDeliveryStartDate") or item.get("startedRunningDate") or ""
+            page_name = item.get("pageName") or item.get("advertiserName") or search_query
             ad_id = str(item.get("id") or item.get("adArchiveId") or int(datetime.now().timestamp()))
             
             lifespan = 0
