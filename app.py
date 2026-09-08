@@ -39,7 +39,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# SESSION STATE INITIALIZATION (ฐานข้อมูลถาวรขณะใช้งาน)
+# SESSION STATE INITIALIZATION
 # -------------------------------------------------------------
 if "watchlist" not in st.session_state:
     st.session_state["watchlist"] = [
@@ -120,11 +120,10 @@ with tabs[0]:
         submitted = col_f3.form_submit_button("➕ บันทึกเข้าระบบ", use_container_width=True)
         
         if submitted and new_brand.strip():
-            # เช็คว่ามีซ้ำไหม
             exists = any(item["name"].lower() == new_brand.strip().lower() for item in st.session_state["watchlist"])
             if not exists:
                 st.session_state["watchlist"].append({"name": new_brand.strip(), "category": new_cat.strip() if new_cat else "ทั่วไป"})
-                st.success(f"บันทึก '{new_brand}' ลงฐานข้อมูลถาวรเรียบร้อย!")
+                st.success(f"บันทึก '{new_brand}' ลงฐานข้อมูลเรียบร้อย!")
                 st.rerun()
             else:
                 st.warning("มีชื่อแบรนด์นี้อยู่ในระบบแล้ว")
@@ -132,14 +131,13 @@ with tabs[0]:
     st.write("---")
     st.markdown("### รายชื่อแบรนด์ใน Watchlist ปัจจุบัน:")
     
-    df_watch = pd.DataFrame(st.session_state["watchlist"])
-    for idx, row in df_watch.iterrows():
+    # วนลูปผ่าน List โดยตรง ป้องกัน KeyError ของ Pandas DataFrame
+    for idx, store_item in enumerate(st.session_state["watchlist"]):
         c_w1, c_w2, c_w3 = st.columns([2, 2, 1])
-        c_w1.markdown(f"🏢 **{row['name']}**")
-        c_w2.text(f"หมวด: {row['category']}")
+        c_w1.markdown(f"🏢 **{store_item['name']}**")
+        c_w2.text(f"หมวด: {store_item['category']}")
         
-        # ลิงก์ตรงไป Meta Ad Library ของร้านนั้นทันที
-        meta_direct_link = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={row['name']}&search_type=keyword_unordered&media_type=all"
+        meta_direct_link = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={store_item['name']}&search_type=keyword_unordered&media_type=all"
         
         btn_col1, btn_col2 = c_w3.columns(2)
         btn_col1.link_button("🔗 ส่องแอด", meta_direct_link)
@@ -153,7 +151,8 @@ with tabs[1]:
     st.write("เมื่อคุณไปส่องแอดจาก Meta Ad Library นำข้อมูลมาวางที่นี่ ระบบจะคำนวณอายุแอดและคัดแยกให้ทันที")
     
     with st.form("ingest_ad_form"):
-        i_brand = st.selectbox("เลือกแบรนด์ใน Watchlist หรือพิมพ์เพิ่ม:", [item["name"] for item in st.session_state["watchlist"]])
+        brand_options = [item["name"] for item in st.session_state["watchlist"]]
+        i_brand = st.selectbox("เลือกแบรนด์ใน Watchlist หรือพิมพ์เพิ่ม:", brand_options if brand_options else ["ทั่วไป"])
         i_caption = st.text_area("ก๊อปปี้แคปชันโฆษณาจาก Meta Ad Library มาวางที่นี่:", height=120)
         
         col_d1, col_d2 = st.columns(2)
@@ -162,12 +161,10 @@ with tabs[1]:
         submitted_ad = st.form_submit_button("🚀 วิเคราะห์และบันทึกแอดเข้าคลัง", type="primary")
         
         if submitted_ad and i_caption.strip():
-            # คำนวณ Ad Lifespan
             now_date = datetime.now().date()
             lifespan_days = (now_date - i_start_date).days
             if lifespan_days < 0: lifespan_days = 0
             
-            # คัดแยก Winning / Testing
             ad_type = "Winning Ad" if lifespan_days >= 14 else "Testing Ad"
             
             new_ad_entry = {
@@ -188,8 +185,6 @@ with tabs[1]:
     
     ads_list = st.session_state["analyzed_ads"]
     for ad in ads_list:
-        card_class = "winning-card" if ad["type"] == "Winning Ad" else "testing-card"
-        
         with st.container(border=True):
             col_a1, col_a2, col_a3 = st.columns([2, 1, 1])
             col_a1.markdown(f"**แบรนด์:** `{ad['brand']}`")
@@ -216,7 +211,6 @@ with tabs[2]:
         if market_keyword.strip():
             st.info(f"ผลการวิเคราะห์ภาพรวมตลาดสำหรับคีย์เวิร์ด: **{market_keyword}**")
             
-            # จำลองการดึงข้อมูลและสกัดแฮชแท็กจากคลังที่มี
             all_captions = " ".join([a["caption"] for a in st.session_state["analyzed_ads"]])
             hashtags = re.findall(r"#\w+", all_captions)
             
