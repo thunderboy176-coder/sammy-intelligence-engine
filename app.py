@@ -45,36 +45,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# 1. FAST ENGINE: ดึงแอดสดอัตโนมัติความเร็วสูง (Direct API Gateway)
+# 1. FAST ENGINE: ดึงแอดสดอัตโนมัติผ่าน Gateway (ส่ง input.urls ตรงสเปก)
 # -------------------------------------------------------------
 def fetch_live_ads_gateway(search_query, max_results=15):
-    """ส่งคำขอไปยัง Fast Scraper บน Apify ใช้เวลาเพียง 5-15 วินาที"""
+    """ส่งคำขอไปยัง Scraper บน Apify โดยใช้คีย์ urls ตรงตาม Input Schema"""
     if not apify_client:
         st.error("⚠️ ไม่พบ APIFY_API_TOKEN กรุณาตั้งค่าใน Streamlit Secrets")
         return []
 
-    # ลิงก์ปลายทาง Meta Ad Library TH
+    # สร้าง URL ค้นหาของ Meta Ad Library TH
     encoded_query = urllib.parse.quote(search_query)
     target_meta_url = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=TH&q={encoded_query}&search_type=keyword_unordered&media_type=all"
 
-    # ใช้ Actor ที่ทำงานเร็วที่สุดและรองรับ URL ตรง
-    # รันแบบจำกัดจำนวนผลลัพธ์เพื่อความรวดเร็ว ไม่ให้ค้างนาน
+    # ใช้ "urls" ตามที่ Input Schema ของ curious_coder กำหนด
     run_input = {
-        "startUrls": [{"url": target_meta_url}],
-        "resultsLimit": max_results,
-        "maxAds": max_results
+        "urls": [{"url": target_meta_url}],
+        "resultsLimit": max_results
     }
 
     try:
-        # สั่งรัน Actor โดยใช้ตัวเลือกที่สกัดข้อมูลไวกว่า
-        run = apify_client.actor("curious_coder/facebook-ads-library-scraper").call(
-            run_input=run_input
-        )
-        
-        # กรณี fallback หาก actor ตัวแรกมีปัญหา
-        if not run:
-            run = apify_client.actor("apify/facebook-ads-scraper").call(run_input=run_input)
-
+        run = apify_client.actor("curious_coder/facebook-ads-library-scraper").call(run_input=run_input)
         dataset_items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
         
         extracted = []
@@ -83,13 +73,13 @@ def fetch_live_ads_gateway(search_query, max_results=15):
         for item in dataset_items:
             # ดึงข้อความแคปชันจากโครงสร้างต่างๆ
             snapshot = item.get("snapshot", {})
-            body_info = snapshot.get("body", {}) if isinstance(snapshot, dict) else {}
+            body_dict = snapshot.get("body", {}) if isinstance(snapshot, dict) else {}
             
             caption = (
                 item.get("caption") or 
                 item.get("text") or 
                 item.get("adCreativeBody") or 
-                (body_info.get("text") if isinstance(body_info, dict) else "") or
+                (body_dict.get("text") if isinstance(body_dict, dict) else "") or
                 ""
             )
             
@@ -109,12 +99,10 @@ def fetch_live_ads_gateway(search_query, max_results=15):
             
             ad_id = str(item.get("id") or item.get("adArchiveId") or item.get("ad_id") or int(datetime.now().timestamp()))
             
-            # คำนวณอายุโฆษณา (Ad Lifespan)
             lifespan = 0
             clean_date = "กำลังรันสด"
             if start_date_raw:
                 try:
-                    # แปลงทั้งแบบ timestamp และ string ISO
                     if isinstance(start_date_raw, (int, float)):
                         ad_date = datetime.fromtimestamp(start_date_raw)
                         clean_date = ad_date.strftime("%Y-%m-%d")
@@ -130,7 +118,6 @@ def fetch_live_ads_gateway(search_query, max_results=15):
 
             is_winning = lifespan >= 14
 
-            # สื่อโฆษณา
             media_url = item.get("displayUrl") or item.get("videoUrl") or item.get("imageUrl") or None
             link_url = item.get("linkUrl") or f"https://www.facebook.com/ads/library/?id={ad_id}"
 
@@ -145,7 +132,6 @@ def fetch_live_ads_gateway(search_query, max_results=15):
                 "link_url": link_url
             })
 
-        # เรียงลำดับเอา Winning Ads (รันนานสุด) ขึ้นก่อน
         return sorted(extracted, key=lambda x: x["lifespan"], reverse=True)
 
     except Exception as e:
@@ -216,7 +202,7 @@ with tabs[0]:
     run_btn = col2.button("🚀 สแกนหา Winning Ads เดี๋ยวนี้", use_container_width=True)
 
     if query_input and run_btn:
-        with st.spinner(f"⚡ กำลังส่ง Fast Gateway ไปดึงแอดสดของ '{query_input}' (ใช้เวลาประมาณ 10-15 วินาที)..."):
+        with st.spinner(f"⚡ กำลังส่ง Fast Gateway ไปดึงแอดสดของ '{query_input}' จาก Meta Ad Library..."):
             ads_data = fetch_live_ads_gateway(query_input, max_results=15)
             st.session_state["live_scanned_ads"] = ads_data
 
