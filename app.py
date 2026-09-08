@@ -23,7 +23,7 @@ if GEMINI_API_KEY:
 
 apify_client = ApifyClient(APIFY_API_TOKEN) if APIFY_API_TOKEN else None
 
-# สไตล์ UI พรีเมียม
+# สไตล์ UI
 st.markdown("""
 <style>
     .winning-card {
@@ -44,15 +44,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -------------------------------------------------------------
-# 1. CORE ENGINE: ดึงแอดสดอัตโนมัติผ่าน Gateway (ไม่โดนบล็อก)
+# 1. CORE ENGINE: ดึงแอดสดอัตโนมัติผ่าน Apify Gateway (แก้ไข Parameter แล้ว)
 # -------------------------------------------------------------
 def fetch_live_ads_gateway(search_query, max_results=20):
-    """ส่งคำขอไปยัง Apify Meta Ad Scraper เพื่อดึงข้อมูลสดจริง 100%"""
+    """ส่งคำขอไปยัง Apify Scraper เพื่อดึงข้อมูลสดจริง 100%"""
     if not apify_client:
         st.error("⚠️ ไม่พบ APIFY_API_TOKEN กรุณาตั้งค่าใน Streamlit Secrets ก่อนใช้งาน")
         return []
 
-    # เรียกใช้งาน Actor: meta-ads-scraper บน Apify
+    # Config input สำหรับ Meta Ads Scraper
     run_input = {
         "searchTerms": [search_query],
         "country": "TH",
@@ -62,8 +62,8 @@ def fetch_live_ads_gateway(search_query, max_results=20):
     }
 
     try:
-        # สั่งรัน Actor
-        run = apify_client.actor("apify/facebook-ads-scraper").call(run_input=run_input, timeout_secs=60)
+        # ตัด timeout_secs ออกเพื่อไม่ให้เกิด unexpected keyword argument error
+        run = apify_client.actor("apify/facebook-ads-scraper").call(run_input=run_input)
         
         # ดึงผลลัพธ์จาก Dataset
         dataset_items = apify_client.dataset(run["defaultDatasetId"]).list_items().items
@@ -72,34 +72,44 @@ def fetch_live_ads_gateway(search_query, max_results=20):
         now = datetime.now()
 
         for item in dataset_items:
-            caption = item.get("text") or item.get("caption") or item.get("adCreativeBody") or ""
+            # ดึงข้อความแคปชันจากฟิลด์ต่างๆ ที่ Meta ส่งมา
+            caption = (
+                item.get("text") or 
+                item.get("caption") or 
+                item.get("adCreativeBody") or 
+                item.get("body", {}).get("text") if isinstance(item.get("body"), dict) else ""
+            )
+            
+            # วันที่เริ่มรัน
             start_date_str = item.get("startDate") or item.get("adDeliveryStartDate") or ""
             page_name = item.get("pageName") or search_query
             ad_id = str(item.get("id") or item.get("adArchiveId") or int(datetime.now().timestamp()))
             
-            # คำนวณอายุแอด (Ad Lifespan)
             lifespan = 0
+            clean_date = "กำลังรันสด"
             if start_date_str:
                 try:
-                    clean_date = start_date_str.split("T")[0]
+                    clean_date = str(start_date_str).split("T")[0]
                     ad_date = datetime.strptime(clean_date, "%Y-%m-%d")
                     lifespan = (now - ad_date).days
                 except Exception:
                     clean_date = "กำลังรันสด"
-            else:
-                clean_date = "กำลังรันสด"
 
             is_winning = lifespan >= 14
+
+            # สื่อโฆษณา
+            media_url = item.get("displayUrl") or item.get("videoUrl") or item.get("imageUrl") or None
+            link_url = item.get("linkUrl") or f"https://www.facebook.com/ads/library/?id={ad_id}"
 
             extracted.append({
                 "ad_id": ad_id,
                 "brand": page_name,
-                "caption": caption if caption else "[โฆษณาประเภทรูปภาพ/คลิปสั้น ไม่มีข้อความบรรยาย]",
+                "caption": caption if caption else "[โฆษณาประเภทรูปภาพ/วิดีโอ ไม่มีข้อความยาว]",
                 "start_date": clean_date,
                 "lifespan": lifespan,
                 "type": "Winning Ad" if is_winning else "Testing Ad",
-                "media_url": item.get("displayUrl") or item.get("videoUrl") or None,
-                "link_url": item.get("linkUrl") or "https://facebook.com/ads/library"
+                "media_url": media_url,
+                "link_url": link_url
             })
 
         return sorted(extracted, key=lambda x: x["lifespan"], reverse=True)
@@ -173,7 +183,7 @@ with tabs[0]:
 
     if query_input and run_btn:
         with st.spinner(f"กำลังส่ง Gateway ไปกวาดข้อมูลแอดสดของ '{query_input}' จาก Meta Ad Library..."):
-            ads_data = fetch_live_ads_gateway(query_input, max_results=25)
+            ads_data = fetch_live_ads_gateway(query_input, max_results=20)
             st.session_state["live_scanned_ads"] = ads_data
 
     ads = st.session_state.get("live_scanned_ads", [])
